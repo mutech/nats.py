@@ -57,7 +57,7 @@ from .subscription import (
     DEFAULT_SUB_PENDING_MSGS_LIMIT,
     Subscription,
 )
-from .transport import TcpTransport, Transport, WebSocketTransport
+from .transport import TcpTransport, Transport, UnixTransport, WebSocketTransport
 
 try:
     from importlib.metadata import version
@@ -1411,6 +1411,10 @@ class Client:
         Handles scheme defaults and port defaults.
         """
         try:
+            if "nats+uds://" in connect_url:
+                # nats+uds:///<abs-path>: the path is the socket, there is no
+                # host or port to default. Return as-is.
+                return urlparse(connect_url)
             if "nats://" in connect_url or "tls://" in connect_url:
                 uri = urlparse(connect_url)
             elif "ws://" in connect_url or "wss://" in connect_url:
@@ -1442,7 +1446,7 @@ class Client:
                 raise errors.Error("nats: invalid connect url option")
             # make sure protocols aren't mixed
             if not (
-                all(server.uri.scheme in ("nats", "tls") for server in self._server_pool)
+                all(server.uri.scheme in ("nats", "tls", "nats+uds") for server in self._server_pool)
                 or all(server.uri.scheme in ("ws", "wss") for server in self._server_pool)
             ):
                 raise errors.Error("nats: mixing of websocket and non websocket URLs is not allowed")
@@ -1457,6 +1461,8 @@ class Client:
         if not self._transport:
             if s.uri.scheme in ("ws", "wss"):
                 self._transport = WebSocketTransport(ws_headers=self.options["ws_connection_headers"])
+            elif s.uri.scheme == "nats+uds":
+                self._transport = UnixTransport()
             else:
                 self._transport = TcpTransport()
         if s.uri.scheme == "wss":

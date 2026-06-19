@@ -1,5 +1,7 @@
 # NATS.py - Python Client and Tools
 
+(This fork adds support for UNIX domain sockets as a proof of concept. Rough patch, will be polished later).
+
 A Python workspace for [NATS messaging system](https://nats.io), containing:
 
 - **[nats-py](./nats)** - An [asyncio](https://docs.python.org/3/library/asyncio.html) Python client for NATS

@@ -188,6 +188,28 @@ class TcpTransport(Transport):
         return bool(self._io_writer) and bool(self._io_reader)
 
 
+class UnixTransport(TcpTransport):
+    """
+    Transport over a UNIX domain socket, selected by the nats+uds:// scheme.
+
+    Behaves exactly like TcpTransport except the connection is opened on a
+    filesystem socket path (the URI path, e.g. nats+uds:///run/snats.sock)
+    instead of host:port. Everything downstream -- reads, writes, and a
+    later TLS upgrade -- is inherited unchanged.
+    """
+
+    async def connect(self, uri: ParseResult, buffer_size: int, connect_timeout: int):
+        r, w = await asyncio.wait_for(
+            asyncio.open_unix_connection(
+                path=uri.path,
+                limit=buffer_size,
+            ),
+            connect_timeout,
+        )
+        self._bare_io_reader = self._io_reader = r
+        self._bare_io_writer = self._io_writer = w
+
+
 class WebSocketTransport(Transport):
     def __init__(self, ws_headers: Optional[Dict[str, List[str]]] = None):
         if not aiohttp:

@@ -11,6 +11,13 @@ on:
 permissions:
     contents: read
 
+env:
+    # No nats-server releases exist for the UDS fork yet, so build it from
+    # source and run every job against it (this also surfaces any TCP
+    # regression from the UDS changes, not just UDS-specific behaviour).
+    NATS_SERVER_FORK_REPO: https://github.com/mutech/nats-server.git
+    NATS_SERVER_FORK_REF: main
+
 jobs:
     nats:
         runs-on: ubuntu-latest
@@ -30,9 +37,10 @@ jobs:
               with:
                   go-version: "stable"
 
-            - name: Install NATS Server
+            - name: Build NATS Server (UDS fork)
               run: |
-                  go install github.com/nats-io/nats-server/v2@${{ matrix.nats-server-version }}
+                  git clone --depth 1 --branch "$NATS_SERVER_FORK_REF" "$NATS_SERVER_FORK_REPO" "$RUNNER_TEMP/nats-server-fork"
+                  go -C "$RUNNER_TEMP/nats-server-fork" install .
               shell: bash
 
             - name: Set up Python ${{ matrix.python-version }}
@@ -68,9 +76,10 @@ jobs:
               with:
                   go-version: "stable"
 
-            - name: Install NATS Server
+            - name: Build NATS Server (UDS fork)
               run: |
-                  go install github.com/nats-io/nats-server/v2@${{ matrix.nats-server-version }}
+                  git clone --depth 1 --branch "$NATS_SERVER_FORK_REF" "$NATS_SERVER_FORK_REPO" "$RUNNER_TEMP/nats-server-fork"
+                  go -C "$RUNNER_TEMP/nats-server-fork" install .
               shell: bash
 
             - name: Set up Python ${{ matrix.python-version }}
