@@ -214,16 +214,18 @@ class ObjectStore:
                 executor_fn = writeinto.write
 
         async for msg in sub._message_iterator:
-            tokens = msg._get_metadata_fields(msg.reply)
-
             if executor:
                 await executor(None, executor_fn, msg.data)
             else:
                 result.data += msg.data
             h.update(msg.data)
 
-            # Check if we are done.
-            if tokens[8] == OBJ_NO_PENDING:
+            # Check if we are done. LOCAL PATCH — use version-aware metadata
+            # (num_pending) instead of a hardcoded V1 token offset; tokens[8] is
+            # num_pending only in the V1 ACK layout, so against V2 subjects the
+            # download never terminated and hung. Matches kv.py's approach.
+            # TODO(upstream nats.py): drop once fixed upstream.
+            if msg.metadata.num_pending == 0:
                 await sub.unsubscribe()
 
                 # Make sure the digest matches.

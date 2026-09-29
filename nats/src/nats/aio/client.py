@@ -2066,10 +2066,15 @@ class Client:
             # OrderedConsumer: checkOrderedMsgs
             if not ctrl_msg and jsi._ordered and msg.reply:
                 did_reset = None
-                tokens = Msg.Metadata._get_metadata_fields(msg.reply)
-                # FIXME: Support JS Domains.
-                sseq = int(tokens[5])
-                dseq = int(tokens[6])
+                # LOCAL PATCH — version-aware sequence parsing (also resolves
+                # the JS-domains FIXME). Hardcoded V1 offsets broke on V2 ACK
+                # subjects for ordered consumers (tokens[5] is the consumer NUID
+                # name), stalling every ordered-consumer watcher (ObjectStore,
+                # KV) against nats-server >= v2.16 dev.
+                # TODO(upstream nats.py): drop once fixed upstream.
+                _ometa = Msg.Metadata._from_reply(msg.reply)
+                sseq = _ometa.sequence.stream
+                dseq = _ometa.sequence.consumer
                 if dseq != jsi._dseq:
                     # Pick up from where we last left.
                     did_reset = await jsi.reset_ordered_consumer(jsi._sseq + 1)
