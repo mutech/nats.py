@@ -139,10 +139,12 @@
           t_lint()   { ruff check; }
           t_spell()  { uv sync --dev; uv run --no-sync codespell; }
           t_type()   { uv sync --dev; ty check nats-core nats-server; }
-          t_build()  { for p in nats-py nats-core nats-server nats-jetstream nats-key-value; do uv build --package "$p" --out-dir .devshell/dist || return 1; done; }
+          # venvs and dists live outside the tree (codespell and pytest walk it).
+          cache="''${XDG_CACHE_HOME:-$HOME/.cache}/nats-fork-devshell/nats.py"
+          t_build()  { for p in nats-py nats-core nats-server nats-jetstream nats-key-value; do uv build --package "$p" --out-dir "$cache/dist" || return 1; done; }
           # As CI's legacy job: own venv outside the workspace per Python version.
           legacy() {
-            local py="$1" venv; shift; venv=".devshell/venv-$(basename "$py")"
+            local py="$1" venv; shift; venv="$cache/venv-$(basename "$py")"
             uv venv --no-project --clear --python "$py" "$venv"
             uv pip install --python "$venv/bin/python" --editable ./nats --group ./nats/pyproject.toml:dev
             "$venv/bin/python" -m pytest -x -vv -s --continue-on-collection-errors "$@"
@@ -151,7 +153,28 @@
           t_legacy_3_13() { legacy ${pkgs.python313}/bin/python3.13 ./nats/tests; }
           t_legacy_3_12() { legacy ${pkgs.python312}/bin/python3.12 ./nats/tests; }
           t_legacy_3_11() { legacy ${pkgs.python311}/bin/python3.11 ./nats/tests; }
-          project() { (cd "$1" && uv sync --dev && uv run --no-sync pytest -v -n auto); }
+          # Hosts without a usable IPv6 loopback (disable_ipv6) cannot run the tests
+          # that bind real IPv6 sockets. Deselect exactly those (by node id, so IPv6
+          # tests that need no socket still run), say so, and leave them to CI.
+          ipv6_ok() { python3 -c 'import socket; socket.socket(socket.AF_INET6).bind(("::1", 0))' 2>/dev/null; }
+          ipv6_socket_tests=(
+            nats-server:tests/test_server.py::test_run_with_ipv6_host
+            nats-server:tests/test_server.py::test_run_with_ipv6_any_address
+            nats-core:tests/test_client.py::test_reconnect_with_ipv6_address
+          )
+          deselect_for() {
+            ipv6_ok && return 0
+            local t
+            for t in "''${ipv6_socket_tests[@]}"; do
+              [ "''${t%%:*}" = "$1" ] || continue
+              echo "ENV: no IPv6 loopback on this host; deselecting ''${t#*:} (CI-only)" >&2
+              printf '%s\n' "--deselect" "''${t#*:}"
+            done
+          }
+          project() {
+            local args; mapfile -t args < <(deselect_for "$1")
+            (cd "$1" && uv sync --dev && uv run --no-sync pytest -v -n auto "''${args[@]}")
+          }
           t_project_nats_server()    { project nats-server; }
           t_project_nats_core()      { project nats-core; }
           t_project_nats_jetstream() { project nats-jetstream; }
@@ -169,8 +192,11 @@
           esac
 
           rev="$(git rev-parse --short HEAD)$(git diff --quiet || echo +dirty)"
-          dir="$root/.devshell/qa/$(date -u +%Y%m%dT%H%M%SZ)-$stage"
-          timings="''${XDG_STATE_HOME:-$HOME/.local/state}/snats-upstream-sync/timings.tsv"
+          # Logs and timings live outside the tree (linters such as codespell walk
+          # it), next to each other under the upstream-sync state dir.
+          state="''${XDG_STATE_HOME:-$HOME/.local/state}/snats-upstream-sync"
+          dir="$state/qa/nats.py/$(date -u +%Y%m%dT%H%M%SZ)-$stage"
+          timings="$state/timings.tsv"
           mkdir -p "$dir" "$(dirname "$timings")"
           [ -s "$timings" ] || printf 'date\trepo\trev\tstage\ttarget\tseconds\trc\thost\n' > "$timings"
           echo "qa $stage @ $rev (server pin ''${pin:0:9}) -> $dir"
