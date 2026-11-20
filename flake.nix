@@ -108,6 +108,86 @@
           "$out/nats-server" --version
         '';
       };
+
+      rerereTrain = pkgs.writeShellScriptBin "rerere-train" ''
+        exec ${pkgs.bash}/bin/bash ${pkgs.git}/share/git/contrib/rerere-train.sh "$@"
+      '';
+
+      # QA runner mirroring check.yml and test.yml. Every target's full output goes
+      # to its own log, wall time and exit code to summary.tsv and to the
+      # cross-session timings file. No timeouts. All targets run even if one fails.
+      # ruff/ty run from the shell (static builds), not via `uv run` as in CI.
+      # Python 3.8-3.10 of CI's legacy matrix are not in nixpkgs: CI-only.
+      #   qa fast   server pin, format, lint, spell, type, legacy client + UDS tests (3.13)
+      #   qa full   + package builds, legacy suite on 3.11/3.12/3.13, the 4 project suites
+      qa = pkgs.writeShellApplication {
+        name = "qa";
+        excludeShellChecks = [ "SC2329" ]; # targets are dispatched via "t_$name"
+        runtimeInputs = [ pkgs.coreutils pkgs.gnused pkgs.git ];
+        text = ''
+          root="$(git rev-parse --show-toplevel)"
+          cd "$root"
+          export PATH="$root/.devshell/bin:$PATH"
+          pin="$(sed -n 's/^[[:space:]]*NATS_SERVER_FORK_REF:[[:space:]]*//p' .github/workflows/test.yml | head -n1)"
+
+          # Tests must run against the server CI pins; rebuild it if needed.
+          t_server() {
+            [ "$(cat .devshell/bin/nats-server.ref 2>/dev/null)" = "$pin" ] || build-nats-server-fork
+            nats-server --version; cat .devshell/bin/nats-server.ref
+          }
+          t_format() { ruff format --check; }
+          t_lint()   { ruff check; }
+          t_spell()  { uv sync --dev; uv run --no-sync codespell; }
+          t_type()   { uv sync --dev; ty check nats-core nats-server; }
+          t_build()  { for p in nats-py nats-core nats-server nats-jetstream nats-key-value; do uv build --package "$p" --out-dir .devshell/dist || return 1; done; }
+          # As CI's legacy job: own venv outside the workspace per Python version.
+          legacy() {
+            local py="$1" venv; shift; venv=".devshell/venv-$(basename "$py")"
+            uv venv --no-project --clear --python "$py" "$venv"
+            uv pip install --python "$venv/bin/python" --editable ./nats --group ./nats/pyproject.toml:dev
+            "$venv/bin/python" -m pytest -x -vv -s --continue-on-collection-errors "$@"
+          }
+          t_legacy_fast() { legacy ${python}/bin/python3 ./nats/tests/test_client_uds.py ./nats/tests/test_client.py; }
+          t_legacy_3_13() { legacy ${pkgs.python313}/bin/python3.13 ./nats/tests; }
+          t_legacy_3_12() { legacy ${pkgs.python312}/bin/python3.12 ./nats/tests; }
+          t_legacy_3_11() { legacy ${pkgs.python311}/bin/python3.11 ./nats/tests; }
+          project() { (cd "$1" && uv sync --dev && uv run --no-sync pytest -v -n auto); }
+          t_project_nats_server()    { project nats-server; }
+          t_project_nats_core()      { project nats-core; }
+          t_project_nats_jetstream() { project nats-jetstream; }
+          t_project_nats_key_value() { project nats-key-value; }
+
+          fast_targets="server format lint spell type legacy_fast"
+          full_targets="server format lint spell type build legacy_3_13 legacy_3_12 legacy_3_11 project_nats_server project_nats_core project_nats_jetstream project_nats_key_value"
+
+          stage="''${1:-}"; shift || true
+          case "$stage" in
+            fast) targets="''${*:-$fast_targets}" ;;
+            full) targets="''${*:-$full_targets}" ;;
+            list) echo "fast: $fast_targets"; echo "full: $full_targets"; exit 0 ;;
+            *) echo "usage: qa fast|full|list [TARGET...]" >&2; exit 2 ;;
+          esac
+
+          rev="$(git rev-parse --short HEAD)$(git diff --quiet || echo +dirty)"
+          dir="$root/.devshell/qa/$(date -u +%Y%m%dT%H%M%SZ)-$stage"
+          timings="''${XDG_STATE_HOME:-$HOME/.local/state}/snats-upstream-sync/timings.tsv"
+          mkdir -p "$dir" "$(dirname "$timings")"
+          [ -s "$timings" ] || printf 'date\trepo\trev\tstage\ttarget\tseconds\trc\thost\n' > "$timings"
+          echo "qa $stage @ $rev (server pin ''${pin:0:9}) -> $dir"
+          failed=0
+          for t in $targets; do
+            start=$(date +%s); set +e
+            ( set -x; "t_$t" ) > "$dir/$t.log" 2>&1; rc=$?
+            set -e; secs=$(( $(date +%s) - start ))
+            printf '%s\t%s\t%s\n' "$t" "$secs" "$rc" >> "$dir/summary.tsv"
+            printf '%s\tnats.py\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$rev" "$stage" "$t" "$secs" "$rc" "$(hostname)" >> "$timings"
+            printf '  %-28s rc=%-3s %6ss\n' "$t" "$rc" "$secs"
+            [ "$rc" -eq 0 ] || failed=1
+          done
+          echo "logs: $dir"
+          exit "$failed"
+        '';
+      };
     in {
       devShells.${system}.default = pkgs.mkShell {
         packages = [
@@ -120,6 +200,9 @@
           goLatest
           pkgs.git
           buildNatsServerFork
+          pkgs.mergiraf
+          rerereTrain
+          qa
         ];
 
         shellHook = ''
