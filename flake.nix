@@ -200,7 +200,7 @@
           goLatest
           pkgs.git
           buildNatsServerFork
-          pkgs.mergiraf
+         
           rerereTrain
           qa
         ];
