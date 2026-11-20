@@ -23,3 +23,7 @@ _examples/*
 docs/*
 .venv
 *__pycache__*
+
+# Fork dev shell (flake.nix): direnv cache, fork nats-server build
+.direnv/
+.devshell/
