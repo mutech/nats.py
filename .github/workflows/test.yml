@@ -17,7 +17,10 @@ env:
     # source and run every job against it (this also surfaces any TCP
     # regression from the UDS changes, not just UDS-specific behaviour).
     NATS_SERVER_FORK_REPO: https://github.com/mutech/nats-server.git
-    NATS_SERVER_FORK_REF: main
+    # Pinned server commit this client was last integrated against. Bumping it is
+    # its own commit (integration step of the upstream sync), so a test failure
+    # is attributable to either the client change or the server bump.
+    NATS_SERVER_FORK_REF: 168064a8aa18cef4e09e01ec116560b720615615
 
 jobs:
     nats:
@@ -40,7 +43,8 @@ jobs:
 
             - name: Build NATS Server (UDS fork)
               run: |
-                  git clone --depth 1 --branch "$NATS_SERVER_FORK_REF" "$NATS_SERVER_FORK_REPO" "$RUNNER_TEMP/nats-server-fork"
+                  git clone --filter=blob:none "$NATS_SERVER_FORK_REPO" "$RUNNER_TEMP/nats-server-fork"
+                  git -C "$RUNNER_TEMP/nats-server-fork" checkout --detach "$NATS_SERVER_FORK_REF"
                   go -C "$RUNNER_TEMP/nats-server-fork" install .
               shell: bash
 
@@ -83,7 +87,8 @@ jobs:
 
             - name: Build NATS Server (UDS fork)
               run: |
-                  git clone --depth 1 --branch "$NATS_SERVER_FORK_REF" "$NATS_SERVER_FORK_REPO" "$RUNNER_TEMP/nats-server-fork"
+                  git clone --filter=blob:none "$NATS_SERVER_FORK_REPO" "$RUNNER_TEMP/nats-server-fork"
+                  git -C "$RUNNER_TEMP/nats-server-fork" checkout --detach "$NATS_SERVER_FORK_REF"
                   go -C "$RUNNER_TEMP/nats-server-fork" install .
               shell: bash
 
