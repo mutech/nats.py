@@ -1508,10 +1508,25 @@ class Client:
         Handles scheme defaults and port defaults.
         """
         try:
-            if "nats+uds://" in connect_url:
-                # nats+uds:///<abs-path>: the path is the socket, there is no
-                # host or port to default. Return as-is.
-                return urlparse(connect_url)
+            if connect_url.startswith("nats+uds:"):
+                # The path is the socket. Deliberately permissive (an upstream sync
+                # must not break URLs that worked before; the format itself is up
+                # for review): any form whose remainder starts with "/" is accepted,
+                # e.g. nats+uds:/abs and nats+uds:///abs. Only what cannot mean a
+                # socket is rejected: a port, query, fragment, or a missing or
+                # relative path. Checked before the host:port fallback below, which
+                # would otherwise turn nats+uds:/abs into a TCP URL.
+                uri = urlparse(connect_url)
+                if (
+                    not connect_url[len("nats+uds:") :].startswith("/")
+                    or not uri.path.startswith("/")
+                    or uri.path == "/"
+                    or uri.port is not None
+                    or uri.query
+                    or uri.fragment
+                ):
+                    raise ValueError("invalid nats+uds URL")
+                return uri
             if "://" in connect_url:
                 normalized = connect_url
             elif ":" in connect_url:

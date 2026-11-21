@@ -64,6 +64,35 @@ class UDSParseTest(unittest.TestCase):
         self.assertEqual(uri.username, "user")
         self.assertEqual(uri.password, "pass")
 
+    def test_parse_uds_url_accepts_path_forms(self):
+        # Permissive on purpose: everything that worked before keeps working.
+        for url, path in (
+            ("nats+uds:///tmp/x.sock", "/tmp/x.sock"),
+            ("nats+uds:/tmp/x.sock", "/tmp/x.sock"),
+            ("nats+uds://user:pass@/tmp/x.sock", "/tmp/x.sock"),
+            ("nats+uds://localhost/tmp/x.sock", "/tmp/x.sock"),
+        ):
+            with self.subTest(url=url):
+                uri = NATS._parse_server_uri(url)
+                self.assertEqual(uri.scheme, "nats+uds")
+                self.assertEqual(uri.path, path)
+
+    def test_parse_uds_url_rejects_what_cannot_be_a_socket(self):
+        # Never silently reinterpreted (e.g. nats+uds:x as TCP host "nats+uds").
+        for url in (
+            "nats+uds://localhost:4222/tmp/x.sock",
+            "nats+uds://:4222/tmp/x.sock",
+            "nats+uds:",
+            "nats+uds://",
+            "nats+uds:///",
+            "nats+uds:relative.sock",
+            "nats+uds://localhost",
+            "nats+uds:///tmp/x.sock?mode=rw",
+            "nats+uds:///tmp/x.sock#frag",
+        ):
+            with self.subTest(url=url), self.assertRaises(nats.errors.Error):
+                NATS._parse_server_uri(url)
+
     def test_non_uds_url_unaffected(self):
         uri = NATS._parse_server_uri("nats://localhost:4222")
         self.assertEqual(uri.scheme, "nats")
