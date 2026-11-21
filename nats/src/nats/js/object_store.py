@@ -46,7 +46,6 @@ OBJ_ALL_CHUNKS_PRE_TEMPLATE = "$O.{bucket}.C.>"
 OBJ_ALL_META_PRE_TEMPLATE = "$O.{bucket}.M.>"
 OBJ_CHUNKS_PRE_TEMPLATE = "$O.{bucket}.C.{obj}"
 OBJ_META_PRE_TEMPLATE = "$O.{bucket}.M.{obj}"
-OBJ_NO_PENDING = "0"
 OBJ_DEFAULT_CHUNK_SIZE = 128 * 1024  # 128k
 OBJ_DIGEST_TYPE = "SHA-256="
 OBJ_DIGEST_TEMPLATE = OBJ_DIGEST_TYPE + "{digest}"
@@ -200,7 +199,14 @@ class ObjectStore:
             return result
 
         chunk_subj = OBJ_CHUNKS_PRE_TEMPLATE.format(bucket=self._name, obj=info.nuid)
-        sub = await self._js.subscribe(subject=chunk_subj, ordered_consumer=True)
+        # Bind to the backing stream by name: a mirrored bucket's stream binds
+        # no subjects, so looking the stream up by subject would fail with
+        # NotFoundError (see #505).
+        sub = await self._js.subscribe(
+            subject=chunk_subj,
+            stream=self._stream,
+            ordered_consumer=True,
+        )
 
         h = sha256()
 
@@ -220,11 +226,7 @@ class ObjectStore:
                 result.data += msg.data
             h.update(msg.data)
 
-            # Check if we are done. LOCAL PATCH — use version-aware metadata
-            # (num_pending) instead of a hardcoded V1 token offset; tokens[8] is
-            # num_pending only in the V1 ACK layout, so against V2 subjects the
-            # download never terminated and hung. Matches kv.py's approach.
-            # TODO(upstream nats.py): drop once fixed upstream.
+            # Check if we are done.
             if msg.metadata.num_pending == 0:
                 await sub.unsubscribe()
 
@@ -502,6 +504,7 @@ class ObjectStore:
 
         watcher._sub = await self._js.subscribe(
             all_meta,
+            stream=self._stream,
             cb=watch_updates,
             ordered_consumer=True,
             deliver_policy=deliver_policy,
