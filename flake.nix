@@ -174,8 +174,11 @@
       # cross-session timings file. No timeouts. All targets run even if one fails.
       # ruff/ty run from the shell (static builds), not via `uv run` as in CI.
       # Python 3.8-3.10 of CI's legacy matrix are not in nixpkgs: CI-only.
-      #   qa fast   server pin, format, lint, spell, type, legacy client + UDS tests (3.13)
+      #   qa fast   server pin, installs, format, lint, spell, type, legacy client + UDS
+      #             tests (3.13)
       #   qa full   + package builds, legacy suite on 3.11/3.12/3.13, the 4 project suites
+      #   qa install fast|full   only the stage's installs (network)
+      #   qa fast|full --no-install   the stage without its installs (offline)
       qa = pkgs.writeShellApplication {
         name = "qa";
         excludeShellChecks = [ "SC2329" ]; # targets are dispatched via "t_$name"
@@ -199,10 +202,25 @@
           cache="''${XDG_CACHE_HOME:-$HOME/.cache}/nats-fork-devshell/nats.py"
           t_build()  { for p in nats-py nats-core nats-server nats-jetstream nats-key-value; do uv build --package "$p" --out-dir "$cache/dist" || return 1; done; }
           # As CI's legacy job: own venv outside the workspace per Python version.
+          venv_for() { echo "$cache/venv-$(basename "$1")"; }
+          install_legacy() {
+            local venv; venv="$(venv_for "$1")"
+            uv venv --no-project --clear --python "$1" "$venv" &&
+              uv pip install --python "$venv/bin/python" --editable ./nats --group ./nats/pyproject.toml:dev
+          }
+          # Every network install of the stage, before its tests: the tests then run
+          # offline (e.g. `qa install full` outside, `qa full --no-install` inside an
+          # offline network namespace). The project targets re-sync the shared .venv
+          # from uv.lock, which works offline once this has filled uv's cache.
+          t_install() {
+            uv sync --dev || return 1
+            local py p
+            for py in $install_pythons; do install_legacy "$py" || return 1; done
+            for p in $install_projects; do (cd "$p" && uv sync --dev) || return 1; done
+          }
           legacy() {
-            local py="$1" venv; shift; venv="$cache/venv-$(basename "$py")"
-            uv venv --no-project --clear --python "$py" "$venv"
-            uv pip install --python "$venv/bin/python" --editable ./nats --group ./nats/pyproject.toml:dev
+            local py="$1" venv; shift; venv="$(venv_for "$py")"
+            [ -x "$venv/bin/python" ] || { echo "no venv for $py: run 'qa install' first" >&2; return 1; }
             "$venv/bin/python" -m pytest -x -vv -s --continue-on-collection-errors "$@"
           }
           t_legacy_fast() { legacy ${python}/bin/python3 ./nats/tests/test_client_uds.py ./nats/tests/test_client.py; }
@@ -236,16 +254,30 @@
           t_project_nats_jetstream() { project nats-jetstream; }
           t_project_nats_key_value() { project nats-key-value; }
 
-          fast_targets="server format lint spell type legacy_fast"
-          full_targets="server format lint spell type build legacy_3_13 legacy_3_12 legacy_3_11 project_nats_server project_nats_core project_nats_jetstream project_nats_key_value"
+          fast_targets="server install format lint spell type legacy_fast"
+          full_targets="server install format lint spell type build legacy_3_13 legacy_3_12 legacy_3_11 project_nats_server project_nats_core project_nats_jetstream project_nats_key_value"
+          fast_pythons="${python}/bin/python3"
+          full_pythons="${pkgs.python313}/bin/python3.13 ${pkgs.python312}/bin/python3.12 ${pkgs.python311}/bin/python3.11"
+          full_projects="nats-server nats-core nats-jetstream nats-key-value"
 
+          usage="usage: qa fast|full [--no-install] [TARGET...] | qa install fast|full | qa list"
           stage="''${1:-}"; shift || true
-          case "$stage" in
-            fast) targets="''${*:-$fast_targets}" ;;
-            full) targets="''${*:-$full_targets}" ;;
-            list) echo "fast: $fast_targets"; echo "full: $full_targets"; exit 0 ;;
-            *) echo "usage: qa fast|full|list [TARGET...]" >&2; exit 2 ;;
+          mode="$stage"
+          if [ "$stage" = install ]; then mode="''${1:-}"; shift || true; fi
+          no_install=0
+          if [ "''${1:-}" = --no-install ]; then no_install=1; shift; fi
+          case "$mode" in
+            fast) install_pythons="$fast_pythons"; install_projects=""; default_targets="$fast_targets" ;;
+            full) install_pythons="$full_pythons"; install_projects="$full_projects"; default_targets="$full_targets" ;;
+            *) [ "$stage" = list ] && { echo "fast: $fast_targets"; echo "full: $full_targets"; exit 0; }
+               echo "$usage" >&2; exit 2 ;;
           esac
+          if [ "$stage" = install ]; then
+            targets=install
+          else
+            targets="''${*:-$default_targets}"
+            [ "$no_install" -eq 0 ] || targets="$(echo " $targets " | sed 's/ install / /; s/^ //; s/ $//')"
+          fi
 
           rev="$(git rev-parse --short HEAD)$(git diff --quiet || echo +dirty)"
           # Logs and timings live outside the tree (linters such as codespell walk
