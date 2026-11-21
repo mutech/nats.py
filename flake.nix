@@ -35,8 +35,16 @@
         in if idx == null then throw "flake.nix: ${pkg} not in uv.lock"
            else builtins.head (builtins.match ''version = "([^"]+)"'' (builtins.elemAt ls (idx + 1)));
 
+      # uv: CI's setup-uv `version:` if check.yml pins one; otherwise CI uses the latest
+      # uv, and so do we (nixpkgs' uv, announced at shell start).
+      uvPin =
+        let hits = lib.filter (m: m != null)
+          (map (builtins.match ''[[:space:]]+version: "([^"]+)"[[:space:]]*'')
+            (lines ./.github/workflows/check.yml));
+        in if hits == [ ] then null else builtins.head (builtins.head hits);
+
       versions = {
-        uv = grab ./.github/workflows/check.yml ''[[:space:]]+version: "([^"]+)"[[:space:]]*'';
+        uv = if uvPin == null then pkgs.uv.version else uvPin;
         ruff = lockVersion "ruff";
         ty = lockVersion "ty";
       };
@@ -235,7 +243,7 @@
           python
           pkgs.python312
           pkgs.python311
-          (astral "uv")
+          (if uvPin == null then pkgs.uv else astral "uv")
           (astral "ruff")
           (astral "ty")
           goLatest
@@ -267,7 +275,7 @@
           export GOPATH="$cache/go"
           export GOMODCACHE="$cache/go/pkg/mod"
           export GOCACHE="$cache/go-build"
-          echo "nats.py dev shell: uv ${versions.uv}, ruff ${versions.ruff}, ty ${versions.ty}, ${python.name}"
+          echo "nats.py dev shell: uv ${versions.uv}${lib.optionalString (uvPin == null) " (CI does not pin uv; using nixpkgs uv)"}, ruff ${versions.ruff}, ty ${versions.ty}, ${python.name}"
           # A stock nats-server elsewhere on PATH lacks UDS; require the fork build,
           # at the commit CI pins.
           pin="$(sed -n 's/^[[:space:]]*NATS_SERVER_FORK_REF:[[:space:]]*//p' .github/workflows/test.yml | head -n1)"
