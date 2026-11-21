@@ -200,7 +200,7 @@
           t_type()   { uv sync --dev; ty check nats-core nats-server; }
           # venvs and dists live outside the tree (codespell and pytest walk it).
           cache="''${XDG_CACHE_HOME:-$HOME/.cache}/nats-fork-devshell/nats.py"
-          t_build()  { for p in nats-py nats-core nats-server nats-jetstream nats-key-value; do uv build --package "$p" --out-dir "$cache/dist" || return 1; done; }
+          t_build()  { for p in $full_builds; do uv build --package "$p" --out-dir "$cache/dist" || return 1; done; }
           # As CI's legacy job: own venv outside the workspace per Python version.
           venv_for() { echo "$cache/venv-$(basename "$1")"; }
           install_legacy() {
@@ -212,11 +212,14 @@
           # offline (e.g. `qa install full` outside, `qa full --no-install` inside an
           # offline network namespace). The project targets re-sync the shared .venv
           # from uv.lock, which works offline once this has filled uv's cache.
+          # `uv build` resolves each package's build-system.requires (uv_build,
+          # setuptools) from the index; building once here puts them into uv's cache.
           t_install() {
             uv sync --dev || return 1
             local py p
             for py in $install_pythons; do install_legacy "$py" || return 1; done
             for p in $install_projects; do (cd "$p" && uv sync --dev) || return 1; done
+            for p in $install_builds; do uv build --package "$p" --out-dir "$cache/dist-install" || return 1; done
           }
           legacy() {
             local py="$1" venv; shift; venv="$(venv_for "$py")"
@@ -259,6 +262,7 @@
           fast_pythons="${python}/bin/python3"
           full_pythons="${pkgs.python313}/bin/python3.13 ${pkgs.python312}/bin/python3.12 ${pkgs.python311}/bin/python3.11"
           full_projects="nats-server nats-core nats-jetstream nats-key-value"
+          full_builds="nats-py nats-core nats-server nats-jetstream nats-key-value"
 
           usage="usage: qa fast|full [--no-install] [TARGET...] | qa install fast|full | qa list"
           stage="''${1:-}"; shift || true
@@ -267,8 +271,8 @@
           no_install=0
           if [ "''${1:-}" = --no-install ]; then no_install=1; shift; fi
           case "$mode" in
-            fast) install_pythons="$fast_pythons"; install_projects=""; default_targets="$fast_targets" ;;
-            full) install_pythons="$full_pythons"; install_projects="$full_projects"; default_targets="$full_targets" ;;
+            fast) install_pythons="$fast_pythons"; install_projects=""; install_builds=""; default_targets="$fast_targets" ;;
+            full) install_pythons="$full_pythons"; install_projects="$full_projects"; install_builds="$full_builds"; default_targets="$full_targets" ;;
             *) [ "$stage" = list ] && { echo "fast: $fast_targets"; echo "full: $full_targets"; exit 0; }
                echo "$usage" >&2; exit 2 ;;
           esac
@@ -278,6 +282,8 @@
             targets="''${*:-$default_targets}"
             [ "$no_install" -eq 0 ] || targets="$(echo " $targets " | sed 's/ install / /; s/^ //; s/ $//')"
           fi
+          # Without installs, uv uses only its cache (no index revalidation).
+          [ "$no_install" -eq 0 ] || export UV_OFFLINE=1
 
           rev="$(git rev-parse --short HEAD)$(git diff --quiet || echo +dirty)"
           # Logs and timings live outside the tree (linters such as codespell walk
