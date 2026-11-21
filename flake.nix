@@ -2,9 +2,10 @@
   # Fork-local dev shell (mutech/nats.py). Not part of upstream nats-io/nats.py.
   #
   # Tool versions are read from the files CI reads, so the shell cannot drift
-  # from CI silently: uv from .github/workflows/check.yml (setup-uv `version:`),
-  # ruff and ty from uv.lock (CI runs them via `uv run --no-sync`). A version
-  # bump there fails evaluation here until its hash is added to `hashes` below.
+  # from CI silently: uv from the setup-uv `version:` of check.yml and test.yml
+  # (all steps must agree), ruff and ty from uv.lock (CI runs them via `uv run
+  # --no-sync`). A version bump there fails evaluation here until its hash is
+  # added to `hashes` below.
   #
   # PyPI's manylinux ruff/ty wheels are dynamic ELF executables that do not run
   # on NixOS (no nix-ld), so the shell provides astral's static musl builds of
@@ -35,13 +36,45 @@
         in if idx == null then throw "flake.nix: ${pkg} not in uv.lock"
            else builtins.head (builtins.match ''version = "([^"]+)"'' (builtins.elemAt ls (idx + 1)));
 
-      # uv: CI's setup-uv `version:` if check.yml pins one; otherwise CI uses the latest
-      # uv, and so do we (nixpkgs' uv, announced at shell start).
+      # `with: version:` of every astral-sh/setup-uv step in a workflow, null for a step
+      # without one. Steps and their `with:` maps are delimited by YAML indentation.
+      setupUvPins = file:
+        let
+          ls = lines file;
+          indent = l: lib.stringLength (builtins.head (builtins.match "( *).*" l));
+          blank = l: builtins.match "[[:space:]]*(#.*)?" l != null;
+          # Leading lines of `xs` up to the first non-blank one indented less than `col`.
+          blockOf = xs: col:
+            let end = lib.lists.findFirstIndex (l: !blank l && indent l < col) null xs;
+            in if end == null then xs else lib.take end xs;
+          usesRe = " *(- +)?uses: *astral-sh/setup-uv@.*";
+          stepPin = i:
+            let
+              col = lib.stringLength (builtins.head (builtins.match "( *(- +)?)uses:.*" (builtins.elemAt ls i)));
+              body = blockOf (lib.drop (i + 1) ls) col;
+              wi = lib.lists.findFirstIndex
+                (l: indent l == col && builtins.match " *with:[[:space:]]*(#.*)?" l != null) null body;
+              withBody = if wi == null then [ ] else blockOf (lib.drop (wi + 1) body) (col + 1);
+              pins = lib.filter (m: m != null)
+                (map (builtins.match " +version: *\"?([^\"[:space:]#]+)\"?[[:space:]]*(#.*)?") withBody);
+            in if pins == [ ] then null else builtins.head (builtins.head pins);
+        in map stepPin (lib.filter (i: builtins.match usesRe (builtins.elemAt ls i) != null)
+          (lib.range 0 (lib.length ls - 1)));
+
+      # uv: the version every setup-uv step in check.yml and test.yml pins; evaluation
+      # fails if the steps disagree (including pinned vs. unpinned). If no step pins one,
+      # CI uses the latest uv, and so do we (nixpkgs' uv, announced at shell start).
       uvPin =
-        let hits = lib.filter (m: m != null)
-          (map (builtins.match ''[[:space:]]+version: "([^"]+)"[[:space:]]*'')
-            (lines ./.github/workflows/check.yml));
-        in if hits == [ ] then null else builtins.head (builtins.head hits);
+        let
+          workflows = [ "check.yml" "test.yml" ];
+          pinsOf = wf: setupUvPins (./.github/workflows + "/${wf}");
+          distinct = lib.unique (lib.concatMap pinsOf workflows);
+          show = v: if v == null then "unpinned" else v;
+        in if lib.length distinct > 1 then throw ''
+             flake.nix: setup-uv steps pin different uv versions (CI would run several):
+             ${lib.concatMapStringsSep "\n" (wf: "  ${wf}: ${lib.concatMapStringsSep ", " show (pinsOf wf)}") workflows}''
+           else if distinct == [ ] then null
+           else builtins.head distinct;
 
       versions = {
         uv = if uvPin == null then pkgs.uv.version else uvPin;
